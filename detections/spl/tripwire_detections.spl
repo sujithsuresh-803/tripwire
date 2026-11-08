@@ -1,0 +1,15 @@
+`comment("TW-001 prompt-injection burst (index=tripwire, sourcetype=tripwire:decision via HEC)")`
+index=tripwire sourcetype=tripwire:decision EventType=decision Action=block OwaspLlm{}=LLM01
+| bin _time span=5m | stats count AS blocks values(Rules{}) AS rules BY _time AgentId Owner BlastRadius | where blocks>=3
+
+`comment("TW-002 lethal trifecta")`
+index=tripwire sourcetype=tripwire:decision EventType=decision Categories{}=trifecta
+| table _time AgentId Owner SessionId Action RequestId
+
+`comment("TW-003 one input, many agents")`
+index=tripwire sourcetype=tripwire:decision EventType=decision Action=block (Kind=prompt OR Kind=tool_result)
+| stats dc(AgentId) AS agents values(AgentId) AS agent_list count BY InputHash | where agents>=2
+
+`comment("TW-005 containment")`
+index=tripwire sourcetype=tripwire:decision EventType=containment
+| table _time AgentId Owner Action Reason By TimeToContainS

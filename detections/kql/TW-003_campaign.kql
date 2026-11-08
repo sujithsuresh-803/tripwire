@@ -1,0 +1,7 @@
+// TW-003 Same blocked input across several agents: one attacker probing many targets
+TripwireDecisions_CL
+| where TimeGenerated > ago(1h)
+| where EventType == "decision" and Action == "block" and Kind in ("prompt", "tool_result")
+| summarize Agents = dcount(AgentId), AgentList = make_set(AgentId), Hits = count(), FirstSeen = min(TimeGenerated)
+    by InputHash
+| where Agents >= 2

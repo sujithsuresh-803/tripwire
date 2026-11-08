@@ -1,0 +1,10 @@
+// Hunting query: block rate and detect-only rate per profile and category over 7 days.
+// Used when tuning a profile from detect to block: a category with many detect hits and no analyst
+// escalations is a false-positive candidate; one with escalations is ready to move to block.
+TripwireDecisions_CL
+| where TimeGenerated > ago(7d) and EventType == "decision"
+| mv-expand Category = Categories to typeof(string)
+| summarize Total = count(), Blocked = countif(Action == "block"), DetectOnly = countif(set_has_element(DetectOnly, Category))
+    by Profile, Category
+| extend BlockRate = round(100.0 * Blocked / Total, 1)
+| order by Profile asc, Total desc

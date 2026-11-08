@@ -1,0 +1,8 @@
+// TW-004 High volume of detect-only hits for one agent and category: promote the rule to block, or tune it
+TripwireDecisions_CL
+| where TimeGenerated > ago(24h)
+| where EventType == "decision" and array_length(DetectOnly) > 0
+| mv-expand Category = DetectOnly to typeof(string)
+| summarize Hits = count() by AgentId, Profile, Category
+| where Hits >= 20
+| order by Hits desc

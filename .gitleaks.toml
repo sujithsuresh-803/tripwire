@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Red-team and test fixtures contain fake credentials on purpose"
+paths = ['''redteam/''', '''tests/''']

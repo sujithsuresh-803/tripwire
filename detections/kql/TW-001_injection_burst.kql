@@ -1,0 +1,10 @@
+// TW-001 Prompt-injection burst against one agent (OWASP LLM01, MITRE ATLAS AML.T0051)
+// Sentinel scheduled analytics rule. Run every 5m, look back 1h. Table: TripwireDecisions_CL (Logs Ingestion API).
+TripwireDecisions_CL
+| where TimeGenerated > ago(1h)
+| where EventType == "decision" and Action == "block"
+| where set_has_element(OwaspLlm, "LLM01")
+| summarize Blocks = count(), Rules = make_set(Rules), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated)
+    by AgentId, Owner, BlastRadius, bin(TimeGenerated, 5m)
+| where Blocks >= 3
+| extend Severity = iff(BlastRadius == "high", "High", "Medium")

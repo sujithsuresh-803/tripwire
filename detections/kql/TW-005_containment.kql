@@ -1,0 +1,5 @@
+// TW-005 Containment actions (quarantine, release, kill switch) with time to contain
+TripwireDecisions_CL
+| where TimeGenerated > ago(1h)
+| where EventType == "containment"
+| project TimeGenerated, AgentId, Owner, BlastRadius, Action, Reason, By, TimeToContainS

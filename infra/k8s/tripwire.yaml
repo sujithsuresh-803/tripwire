@@ -1,0 +1,100 @@
+# Tripwire on AKS / EKS. Hardened pod: non-root, read-only root filesystem, no privilege escalation,
+# all capabilities dropped, no service-account token. Network policy allows ingress only from labelled
+# agent namespaces and egress only to DNS and HTTPS (the model endpoint).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tripwire
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: tripwire, namespace: tripwire}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: tripwire, namespace: tripwire, labels: {app: tripwire}}
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: tripwire}}
+  template:
+    metadata: {labels: {app: tripwire}}
+    spec:
+      serviceAccountName: tripwire
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: tripwire
+          image: REGISTRY/tripwire@sha256:DIGEST      # pinned by digest at deploy time
+          imagePullPolicy: Always
+          ports: [{containerPort: 8080}]
+          env:
+            - {name: TRIPWIRE_POLICY, value: /etc/tripwire/policy.yaml}
+            - {name: TRIPWIRE_LOG, value: /var/log/tripwire/decisions.jsonl}
+            - {name: TRIPWIRE_ADMIN_TOKEN_FILE, value: /run/secrets/tripwire/admin-token}
+            - {name: TRIPWIRE_UPSTREAM_KEY_FILE, value: /run/secrets/tripwire/upstream-key}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          readinessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 15}
+          volumeMounts:
+            - {name: policy, mountPath: /etc/tripwire, readOnly: true}
+            - {name: logs, mountPath: /var/log/tripwire}
+            - {name: tmp, mountPath: /tmp}
+            - {name: secrets, mountPath: /run/secrets/tripwire, readOnly: true}
+      volumes:
+        - {name: policy, configMap: {name: tripwire-policy}}
+        - {name: logs, emptyDir: {sizeLimit: 1Gi}}      # tailed by the log shipper sidecar / node agent
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+        - name: secrets                                 # files, not env vars; synced from Key Vault / Secrets Manager by the CSI driver
+          secret: {secretName: tripwire-secrets, defaultMode: 0400}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: tripwire, namespace: tripwire}
+spec:
+  selector: {app: tripwire}
+  ports: [{port: 80, targetPort: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: tripwire, namespace: tripwire}
+spec:
+  podSelector: {matchLabels: {app: tripwire}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {tripwire.io/agents: "true"}}
+      ports: [{port: 8080}]
+  egress:
+    - to: [{namespaceSelector: {}, podSelector: {matchLabels: {k8s-app: kube-dns}}}]
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+    - ports: [{port: 443, protocol: TCP}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: tripwire, namespace: tripwire}
+spec:
+  minAvailable: 2
+  selector: {matchLabels: {app: tripwire}}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: tripwire, namespace: tripwire}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: tripwire}
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 60}}

@@ -1,0 +1,6 @@
+// TW-002 Lethal trifecta: egress attempted after the session read private data and untrusted content
+// (OWASP LLM06 / ASI02). Fires on block and on detect, so detect-mode profiles still raise an incident.
+TripwireDecisions_CL
+| where TimeGenerated > ago(1h)
+| where EventType == "decision" and set_has_element(Categories, "trifecta")
+| project TimeGenerated, AgentId, Owner, BlastRadius, SessionId, Action, Rules, RequestId

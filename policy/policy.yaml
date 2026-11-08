@@ -1,0 +1,96 @@
+# Tripwire runtime policy. Policy as code: reviewed in PRs, tested by the red-team gate in CI.
+# Modes per rule: block (deny the call), detect (allow and log), redact (rewrite and allow), off.
+version: 2
+kill_switch: false                 # true denies every agent call (global stop)
+
+gateway:
+  max_body_bytes: 262144           # larger bodies get 413 before any parsing
+  max_concurrency: 32              # in-flight requests; the next one is shed with 503 + Retry-After
+  global_rps: 50                   # global token bucket, requests per second
+  global_burst: 100
+  enforcement_timeout_ms: 150      # budget for external-processing filters (classifier, DLP)
+
+containment:
+  auto_quarantine_after: 3         # blocked high-severity events from one agent ...
+  window_s: 300                    # ... inside this window quarantine the agent
+
+injection:
+  threshold: 1.0
+  rule_weights: {addressed_to_ai: 1.0, chat_markup: 1.0, encoded_payload: 1.0}   # merged from loop.py
+  extra_phrases: [system override, context window, ignorez toutes]   # merged from loop.py
+
+# One profile per AI archetype. Copilots fail open and lean on detect; homegrown agents fail closed.
+profiles:
+  saas_copilot:
+    on_timeout: allow
+    max_prompt_tokens: 8000
+    truncate: true                 # over budget: keep the system prompt and the newest messages
+    max_output_tokens: 2048
+    max_thinking_tokens: 4000
+    tokens_per_minute: 60000
+    modes: {injection: detect, jailbreak: detect, prompt_leak: block, pii: redact, secrets: block,
+            overload: block, output_exfil: block, indirect_injection: block}
+  low_code_agent:
+    on_timeout: block
+    max_prompt_tokens: 6000
+    truncate: true
+    max_output_tokens: 1024
+    max_thinking_tokens: 2000
+    tokens_per_minute: 30000
+    trifecta: block                # private data + untrusted content + egress in one session
+    modes: {injection: block, jailbreak: block, prompt_leak: block, pii: redact, secrets: block,
+            overload: block, output_exfil: block, indirect_injection: block}
+  homegrown_agent:
+    on_timeout: block
+    max_prompt_tokens: 16000
+    truncate: false                # reject instead: a pipeline should not lose context silently
+    max_output_tokens: 4096
+    max_thinking_tokens: 8000
+    tokens_per_minute: 120000
+    trifecta: block
+    modes: {injection: block, jailbreak: block, prompt_leak: block, pii: redact, secrets: block,
+            overload: block, output_exfil: block, indirect_injection: block}
+  coding_agent:
+    on_timeout: allow
+    max_prompt_tokens: 32000
+    truncate: true
+    max_output_tokens: 8192
+    max_thinking_tokens: 16000
+    tokens_per_minute: 200000
+    trifecta: detect
+    modes: {injection: block, jailbreak: detect, prompt_leak: detect, pii: detect, secrets: block,
+            overload: block, output_exfil: block, indirect_injection: block}
+
+# MCP tools the gateway knows. A tool call is allowed only if the agent lists the tool, its server is
+# approved for the agent, the agent holds the scope, and the arguments pass the checks.
+tools:
+  crm/lookup_customer: {server: crm, scope: crm.read, capabilities: [private_data],
+                        args: {customer_id: {pattern: "^C[0-9]{6}$"}}}
+  files/read:          {server: files, scope: files.read, capabilities: [private_data],
+                        args: {path: {deny: "\\.\\.[/\\\\]|^[/\\\\]|^[a-zA-Z]:|\\.env$|id_rsa"}}}
+  web/fetch:           {server: web, scope: web.read, capabilities: [untrusted_content],
+                        args: {url: {pattern: "^https://", max_len: 2048}}}
+  mail/read_inbox:     {server: mail, scope: mail.read, capabilities: [untrusted_content, private_data]}
+  mail/send:           {server: mail, scope: mail.send, capabilities: [egress],
+                        args: {to: {pattern: "^[\\w.+-]+@(tdsynnex-demo\\.example|partner-demo\\.example)$"}}}
+  http/post:           {server: web, scope: web.write, capabilities: [egress],
+                        args: {url: {pattern: "^https://", max_len: 2048}}}
+  memory/write:        {server: memory, scope: memory.write, capabilities: [persist], scan_args: true}
+  sql/query:           {server: warehouse, scope: warehouse.read, capabilities: [private_data],
+                        args: {query: {deny: "(?i)\\b(drop|delete|update|insert|alter|truncate|grant)\\b"}}}
+  shell/exec:          {server: devbox, scope: devbox.exec, capabilities: [code_exec],
+                        args: {cmd: {deny: "(?i)curl|wget|nc |bash -i|rm -rf|base64 -d|/dev/tcp"}}}
+
+# Agent inventory: owner and blast radius travel with every decision log line.
+agents:
+  hr-copilot:      {profile: saas_copilot, owner: hr-it, blast_radius: medium,
+                    mcp_servers: [files], scopes: [files.read], tools: [files/read]}
+  sales-flow-bot:  {profile: low_code_agent, owner: sales-ops, blast_radius: high,
+                    mcp_servers: [crm, web, mail], scopes: [crm.read, web.read, mail.read, mail.send],
+                    tools: [crm/lookup_customer, web/fetch, mail/read_inbox, mail/send]}
+  quote-pipeline:  {profile: homegrown_agent, owner: pricing-eng, blast_radius: high,
+                    mcp_servers: [warehouse, memory, web], scopes: [warehouse.read, memory.write, web.read],
+                    tools: [sql/query, memory/write, web/fetch]}
+  dev-assistant:   {profile: coding_agent, owner: platform-eng, blast_radius: medium,
+                    mcp_servers: [files, devbox], scopes: [files.read, devbox.exec],
+                    tools: [files/read, shell/exec]}
