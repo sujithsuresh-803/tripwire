@@ -2,6 +2,8 @@
 FROM python:3.12-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
+# Pull in Debian security fixes newer than the base image (Trivy gate fails on fixable HIGH/CRITICAL)
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install -r requirements.txt && useradd --uid 10001 --no-create-home tripwire
 COPY tripwire tripwire
