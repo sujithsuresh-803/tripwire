@@ -262,9 +262,9 @@ resource "azurerm_sentinel_alert_rule_scheduled" "rules" {
 
 # ------------------------------------------------------------------ the gateway
 resource "azurerm_container_app_environment" "env" {
-  name                       = "cae-${local.name}"
-  resource_group_name        = azurerm_resource_group.rg.name
-  location                   = azurerm_resource_group.rg.location
+  name                           = "cae-${local.name}"
+  resource_group_name            = azurerm_resource_group.rg.name
+  location                       = azurerm_resource_group.rg.location
   log_analytics_workspace_id     = azurerm_log_analytics_workspace.law.id
   infrastructure_subnet_id       = azurerm_subnet.aca.id
   internal_load_balancer_enabled = true # environment has no public IP
